@@ -1,0 +1,143 @@
+---
+- name: Despliegue Zero Trust Estrato 3 - Automatización básica pyme
+  hosts: zt_nodes
+  become: true
+  vars:
+    keycloak_version: "25.0.4"
+    opa_version: "0.68.0"
+    deploy_path: "/opt/zt"
+    domain: "zt-pyme.local"
+
+  tasks:
+    - name: Instalar paquetes base
+      apt:
+        name: "{{ item }}"
+        state: present
+        update_cache: yes
+      loop:
+        - docker.io
+        - docker-compose-plugin
+        - python3-pip
+        - nginx
+        - acl
+
+    - name: Crear directorios de trabajo
+      file:
+        path: "{{ item }}"
+        state: directory
+        mode: "0755"
+      loop:
+        - "{{ deploy_path }}/keycloak"
+        - "{{ deploy_path }}/opa"
+        - "{{ deploy_path }}/nginx"
+
+    - name: Desplegar Keycloak, PostgreSQL y OPA con Docker Compose
+      copy:
+        dest: "{{ deploy_path }}/docker-compose.yml"
+        content: |
+          version: '3.8'
+
+          services:
+            postgres:
+              image: postgres:15
+              environment:
+                POSTGRES_DB: keycloak
+                POSTGRES_USER: keycloak
+                POSTGRES_PASSWORD: changeme
+              volumes:
+                - postgres_data:/var/lib/postgresql/data
+              networks:
+                - zt-network
+              restart: unless-stopped
+
+            keycloak:
+              image: quay.io/keycloak/keycloak:{{ keycloak_version }}
+              environment:
+                KC_DB: postgres
+                KC_DB_URL: jdbc:postgresql://postgres:5432/keycloak
+                KC_DB_USERNAME: keycloak
+                KC_DB_PASSWORD: changeme
+                KEYCLOAK_ADMIN: admin
+                KEYCLOAK_ADMIN_PASSWORD: admin123
+                KC_HOSTNAME: localhost
+              ports:
+                - "8080:8080"
+              depends_on:
+                - postgres
+              command: ["start-dev"]
+              networks:
+                - zt-network
+              restart: unless-stopped
+
+            opa:
+              image: openpolicyagent/opa:{{ opa_version }}
+              ports:
+                - "8181:8181"
+              volumes:
+                - {{ deploy_path }}/opa:/opt/opa
+              command: ["run", "--server", "--addr=0.0.0.0:8181", "/opt/opa/policy.rego"]
+              networks:
+                - zt-network
+              restart: unless-stopped
+
+          volumes:
+            postgres_data:
+
+          networks:
+            zt-network:
+              driver: bridge
+
+    - name: Crear política inicial de OPA
+      copy:
+        dest: "{{ deploy_path }}/opa/policy.rego"
+        content: |
+          package authz
+
+          default allow := false
+
+          allow {
+              input.user.role == "admin"
+              input.device.trusted == true
+          }
+
+    - name: Configurar nginx como proxy inverso (PEP)
+      copy:
+        dest: /etc/nginx/sites-available/zt-proxy
+        content: |
+          server {
+              listen 80;
+              server_name app.zt-pyme.local;
+
+              location / {
+                  auth_request /auth;
+                  auth_request_set $auth_status $upstream_status;
+                  proxy_pass http://127.0.0.1:8080;
+              }
+
+              location = /auth {
+                  internal;
+                  proxy_pass http://localhost:8181/v1/data/authz/allow;
+                  proxy_pass_request_body off;
+                  proxy_set_header Content-Length "";
+                  proxy_set_header X-Original-URI $request_uri;
+              }
+          }
+      notify: reload nginx
+
+    - name: Habilitar sitio de nginx
+      file:
+        src: /etc/nginx/sites-available/zt-proxy
+        dest: /etc/nginx/sites-enabled/zt-proxy
+        state: link
+      notify: reload nginx
+
+    - name: Iniciar servicios con Docker Compose
+      community.docker.docker_compose_v2:
+        project_src: "{{ deploy_path }}"
+        state: present
+
+  handlers:
+    - name: reload nginx
+      systemd:
+        name: nginx
+        state: reloaded
