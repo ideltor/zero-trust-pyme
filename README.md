@@ -1,10 +1,8 @@
 # Zero Trust Architecture para PYMEs
 
-> **Trabajo Fin de Grado en Ingeniería Informática** — Universidad Internacional de La Rioja (UNIR)
+> **Trabajo de fin de Estudio, en el Grado en Ingeniería Informática** — Universidad Internacional de La Rioja (UNIR)
 >
 > **Autor:** Ignacio Delgado Torrejón
->
-> **Directora:** Alba Cristina Vicuña Pilataxi
 >
 > **Curso:** 2025/2026
 >
